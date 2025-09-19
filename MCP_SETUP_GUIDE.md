@@ -1,14 +1,14 @@
-# ScreenMonitorMCP v2 - MCP Client Setup Guide
+# ScreenMonitorMCP - MCP Client Setup Guide
 
-This guide will help you set up ScreenMonitorMCP v2 with various MCP clients including Claude Desktop.
+This guide will help you set up ScreenMonitorMCP with various MCP clients including Claude Desktop.
 
 ## Installation
 
 ### 1. Install the Package
 
 ```bash
-# Install from PyPI (when published)
-pip install screenmonitormcp-v2
+# Install from PyPI
+pip install screenmonitormcp
 
 # Or install from source
 pip install -e .
@@ -59,9 +59,9 @@ Add the following to your `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "screenmonitormcp-v2": {
+    "screenmonitormcp": {
       "command": "python",
-      "args": ["-m", "screenmonitormcp_v2.mcp_main"],
+      "args": ["-m", "src.screenmonitormcp.mcp_main"],
       "env": {
         "OPENAI_API_KEY": "your-openai-api-key-here",
         "OPENAI_BASE_URL": "https://api.openai.com/v1",
@@ -79,8 +79,8 @@ If you installed via pip, you can use:
 ```json
 {
   "mcpServers": {
-    "screenmonitormcp-v2": {
-      "command": "screenmonitormcp-v2-mcp",
+    "screenmonitormcp": {
+      "command": "screenmonitormcp-mcp",
       "env": {
         "OPENAI_API_KEY": "your-openai-api-key-here",
         "OPENAI_BASE_URL": "https://api.openai.com/v1",
@@ -102,99 +102,49 @@ After updating the configuration, restart Claude Desktop to load the MCP server.
 For other MCP clients, use the following command:
 
 ```bash
-python -m screenmonitormcp_v2.mcp_main
+python -m src.screenmonitormcp.mcp_main
 ```
 
 Or if installed via pip:
 
 ```bash
-screenmonitormcp-v2-mcp
+screenmonitormcp-mcp
 ```
 
 ### MCP Inspector (for testing)
 
 ```bash
-npx @modelcontextprotocol/inspector python -m screenmonitormcp_v2.mcp_main
+npx @modelcontextprotocol/inspector python -m src.screenmonitormcp.mcp_main
 ```
 
 ## Available Tools
 
-Once configured, you'll have access to these tools:
+Once configured, you'll have access to these tools. All tools return a JSON string. On success, the JSON will have a `success` field set to `true` and a `data` field with the result. On failure, `success` will be `false` and there will be an `error` object with `code` and `message` fields.
 
-### Available Tools
+### Core Tools
 
-### 1. `analyze_screen`
-- **Description**: Analyze the current screen content using AI vision
-- **Parameters**:
-  - `query`: What to analyze or look for in the screen
-  - `monitor` (optional): Monitor number to analyze (0 for primary)
-  - `detail_level` (optional): Level of detail for analysis (low or high, default: high)
+- `capture_screen(monitor: int = 0, format: str = "png")`: Captures the screen and returns a base64 encoded image.
+- `analyze_screen(query: str, monitor: int = 0)`: Analyzes the screen content with an AI model.
+- `analyze_image(image_base64: str, query: str)`: Analyzes a base64 encoded image.
+- `chat_completion(messages: list, model: str = None, max_tokens: int = 1000, temperature: float = 0.7)`: Generates a chat completion.
 
-### 2. `chat_completion`
-- **Description**: Generate chat completion using AI models
-- **Parameters**:
-  - `messages`: Array of chat messages with role and content (required)
-  - `model` (optional): AI model to use
-  - `max_tokens` (optional): Maximum tokens for response (default: 1000)
-  - `temperature` (optional): Temperature for response generation (default: 0.7)
+### Streaming Tools
 
-### 3. `list_ai_models`
-- **Description**: List available AI models from the configured provider
-- **Parameters**: None
+- `create_stream(monitor: int = 0, fps: int = 10, quality: int = 80, format: str = "jpeg")`: Creates a screen streaming session.
+- `list_streams()`: Lists active streams.
+- `get_stream_info(stream_id: str)`: Gets information about a stream.
+- `stop_stream(stream_id: str)`: Stops a stream.
 
-### 4. `get_ai_status`
-- **Description**: Get AI service configuration status
-- **Parameters**: None
+### Memory Tools
 
-### 5. `get_performance_metrics`
-- **Description**: Get detailed performance metrics and system health
-- **Parameters**: None
+- `analyze_scene_from_memory(query: str, stream_id: str = None, time_range_minutes: int = 30, limit: int = 10)`: Analyzes a scene from memory.
+- `query_memory(query: str, stream_id: str = None, time_range_minutes: int = 60, limit: int = 20)`: Queries the memory system.
+- `get_memory_statistics()`: Gets memory system statistics.
 
-### 6. `get_system_status`
-- **Description**: Get overall system status and health information
-- **Parameters**: None
+### System Tools
 
-### 7. `create_stream`
-- **Description**: Create a new screen streaming session
-- **Parameters**:
-  - `monitor` (optional): Monitor number to stream (0 for primary, default: 0)
-  - `fps` (optional): Frames per second for streaming (default: 10)
-  - `quality` (optional): Image quality 1-100 (default: 80)
-  - `format` (optional): Image format (jpeg or png, default: jpeg)
-
-### 8. `list_streams`
-- **Description**: List all active streaming sessions
-- **Parameters**: None
-
-### 9. `get_stream_info`
-- **Description**: Get information about a specific stream
-- **Parameters**:
-  - `stream_id`: Stream ID to get information for (required)
-
-### 10. `stop_stream`
-- **Description**: Stop a specific streaming session
-- **Parameters**:
-  - `stream_id`: Stream ID to stop (required)
-
-### 11. `analyze_scene_from_memory`
-- **Description**: Analyze scene based on stored memory data
-- **Parameters**:
-  - `query`: What to analyze or look for in the stored scenes (required)
-  - `stream_id` (optional): Specific stream to analyze
-  - `time_range_minutes` (optional): Time range to search in minutes (default: 30)
-  - `limit` (optional): Maximum number of results to analyze (default: 10)
-
-### 12. `query_memory`
-- **Description**: Query the memory system for stored analysis data
-- **Parameters**:
-  - `query`: Search query for memory entries (required)
-  - `stream_id` (optional): Filter by specific stream ID
-  - `time_range_minutes` (optional): Time range to search in minutes (default: 60)
-  - `limit` (optional): Maximum number of results (default: 20)
-
-### 13. `get_memory_statistics`
-- **Description**: Get memory system statistics and health information
-- **Parameters**: None
+- `get_performance_metrics()`: Gets performance metrics.
+- `get_system_status()`: Gets system status.
 
 ## Usage Examples
 
@@ -253,9 +203,9 @@ You can use different AI models by updating the environment variables:
 ```json
 {
   "mcpServers": {
-    "screenmonitormcp-v2": {
+    "screenmonitormcp": {
       "command": "python",
-      "args": ["-m", "screenmonitormcp_v2.mcp_main"],
+      "args": ["-m", "src.screenmonitormcp.mcp_main"],
       "env": {
         "OPENAI_API_KEY": "your-api-key",
         "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",

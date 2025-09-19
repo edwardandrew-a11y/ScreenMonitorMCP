@@ -1,4 +1,9 @@
-"""Command handler for MCP v3 WebSocket protocol implementing dual-channel architecture."""
+"""
+Command handler for MCP v3 WebSocket protocol implementing a dual-channel architecture.
+
+This module is responsible for processing WebSocket commands, managing client connections,
+and handling different communication channels for JSON control messages and binary data streams.
+"""
 
 import asyncio
 import json
@@ -17,9 +22,24 @@ logger = structlog.get_logger()
 
 
 class CommandHandler:
-    """Handles MCP v3 WebSocket commands with dual-channel architecture."""
+    """
+    Handles MCP v3 WebSocket commands with a dual-channel architecture.
+
+    This class processes incoming commands from WebSocket clients, manages active
+    preview streams, and coordinates responses. It separates control messages
+    (JSON) from high-throughput data streams (binary), optimizing performance
+    for real-time screen monitoring.
+
+    Attributes:
+        _active_preview_tasks (Dict[str, asyncio.Task]): A dictionary mapping
+            connection IDs to their active preview streaming tasks.
+        _connection_streams (Dict[str, str]): A dictionary mapping connection
+            IDs to their associated stream IDs.
+        screen_capture (ScreenCapture): An instance of the screen capture service.
+    """
     
     def __init__(self):
+        """Initializes the CommandHandler."""
         self._active_preview_tasks: Dict[str, asyncio.Task] = {}
         self._connection_streams: Dict[str, str] = {}  # connection_id -> stream_id
         self.screen_capture = ScreenCapture()
@@ -30,7 +50,22 @@ class CommandHandler:
         connection_id: str, 
         command: WebSocketCommand
     ) -> Optional[WebSocketResponse]:
-        """Handle incoming WebSocket command with dual-channel architecture."""
+        """
+        Handle an incoming WebSocket command.
+
+        This method acts as the main entry point for processing commands received
+        from a WebSocket client. It routes commands to the appropriate handler
+        based on their type and ensures proper error handling and logging.
+
+        Args:
+            websocket: The WebSocket connection instance.
+            connection_id: The unique identifier for the WebSocket connection.
+            command: The command received from the client.
+
+        Returns:
+            An optional WebSocketResponse to be sent back to the client. Returns
+            None if no JSON response is required (e.g., for binary data requests).
+        """
         start_time = time.time()
         
         try:
@@ -104,7 +139,21 @@ class CommandHandler:
         connection_id: str, 
         command: WebSocketCommand
     ) -> WebSocketResponse:
-        """Handle subscribe_preview command - starts continuous low-quality binary stream."""
+        """
+        Handle the 'subscribe_preview' command.
+
+        This method starts a continuous, low-quality preview stream over the
+        WebSocket's binary channel. It cancels any existing preview task for the
+        connection before starting a new one.
+
+        Args:
+            websocket: The WebSocket connection instance.
+            connection_id: The unique identifier for the WebSocket connection.
+            command: The 'subscribe_preview' command from the client.
+
+        Returns:
+            A WebSocketResponse acknowledging the subscription.
+        """
         try:
             stream_id = command.stream_id or f"preview_{connection_id}"
             
@@ -157,7 +206,17 @@ class CommandHandler:
         connection_id: str, 
         command: WebSocketCommand
     ) -> None:
-        """Handle request_hq_frame command - capture and send high-quality PNG frame as binary."""
+        """
+        Handle the 'request_hq_frame' command.
+
+        This method captures a single high-quality PNG frame and sends it over
+        the WebSocket's binary channel. No JSON response is sent on success.
+
+        Args:
+            websocket: The WebSocket connection instance.
+            connection_id: The unique identifier for the WebSocket connection.
+            command: The 'request_hq_frame' command from the client.
+        """
         try:
             logger.info(
                 "Processing HQ frame request",
@@ -222,7 +281,19 @@ class CommandHandler:
         connection_id: str, 
         command: WebSocketCommand
     ) -> WebSocketResponse:
-        """Handle unsubscribe command - stops preview stream."""
+        """
+        Handle the 'unsubscribe' command.
+
+        This method stops the active preview stream for the given connection.
+
+        Args:
+            websocket: The WebSocket connection instance.
+            connection_id: The unique identifier for the WebSocket connection.
+            command: The 'unsubscribe' command from the client.
+
+        Returns:
+            A WebSocketResponse acknowledging the unsubscription.
+        """
         try:
             # Cancel preview task if exists
             if connection_id in self._active_preview_tasks:
@@ -271,7 +342,18 @@ class CommandHandler:
         connection_id: str, 
         stream_id: str
     ) -> None:
-        """Stream low-quality preview frames continuously as binary data."""
+        """
+        Stream low-quality preview frames continuously.
+
+        This method runs in a loop, capturing low-quality JPEG frames and
+        sending them over the WebSocket's binary channel to provide a real-time
+        preview of the screen.
+
+        Args:
+            websocket: The WebSocket connection instance.
+            connection_id: The unique identifier for the WebSocket connection.
+            stream_id: The identifier for the preview stream.
+        """
         frame_count = 0
         fps = 2  # Low FPS for preview (configurable)
         frame_interval = 1.0 / fps
@@ -366,7 +448,16 @@ class CommandHandler:
 
     
     async def cleanup_connection(self, connection_id: str) -> None:
-        """Clean up resources for a disconnected connection."""
+        """
+        Clean up resources for a disconnected connection.
+
+        This method is called when a WebSocket connection is closed. It ensures
+        that any active tasks for the connection are cancelled and that any
+        associated resources are released.
+
+        Args:
+            connection_id: The unique identifier of the disconnected connection.
+        """
         # Cancel and remove preview task if exists
         if connection_id in self._active_preview_tasks:
             task = self._active_preview_tasks[connection_id]

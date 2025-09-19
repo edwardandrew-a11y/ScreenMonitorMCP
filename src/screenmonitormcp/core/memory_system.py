@@ -1,4 +1,10 @@
-"""Memory system for ScreenMonitorMCP v2."""
+"""
+Memory System for ScreenMonitorMCP v2.
+
+This module provides a persistent memory system for storing and retrieving
+AI analysis results, scene context, and other relevant data. It uses an
+asynchronous SQLite database pool for efficient I/O operations.
+"""
 
 import asyncio
 import json
@@ -19,7 +25,19 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class MemoryEntry:
-    """Data class for memory entries."""
+    """
+    Represents a single entry in the memory system.
+
+    Attributes:
+        id (Optional[str]): A unique identifier for the memory entry.
+        timestamp (str): The timestamp of the entry in ISO format.
+        entry_type (str): The type of the entry (e.g., 'analysis', 'scene').
+        content (Dict[str, Any]): The main content of the entry, stored as a JSON object.
+        metadata (Dict[str, Any]): Additional metadata, stored as a JSON object.
+        tags (List[str]): A list of tags for categorization and searching.
+        stream_id (Optional[str]): An optional identifier for the data stream.
+        sequence (Optional[int]): An optional sequence number within a stream.
+    """
     id: Optional[str] = None
     timestamp: str = ""
     entry_type: str = ""  # 'analysis', 'scene', 'context'
@@ -30,6 +48,7 @@ class MemoryEntry:
     sequence: Optional[int] = None
     
     def __post_init__(self):
+        """Initializes default values for the memory entry."""
         if self.content is None:
             self.content = {}
         if self.metadata is None:
@@ -42,16 +61,33 @@ class MemoryEntry:
             self.id = self._generate_id()
     
     def _generate_id(self) -> str:
-        """Generate unique ID for memory entry."""
+        """Generates a unique ID for the memory entry."""
         content_str = json.dumps(self.content, sort_keys=True)
         hash_input = f"{self.timestamp}{self.entry_type}{content_str}"
         return hashlib.md5(hash_input.encode()).hexdigest()[:16]
 
 
 class MemorySystem:
-    """Memory system for storing and retrieving AI analysis results."""
+    """
+    Manages the storage and retrieval of AI analysis results and other data.
+
+    This class provides an interface to the persistent memory system, handling
+    database initialization, data storage, querying, and maintenance tasks
+    like automatic cleanup of old entries.
+
+    Attributes:
+        db_path (str): The path to the SQLite database file.
+        auto_cleanup (bool): A flag to enable or disable automatic cleanup.
+    """
     
     def __init__(self, db_path: Optional[str] = None, auto_cleanup: bool = True):
+        """
+        Initializes the MemorySystem.
+
+        Args:
+            db_path: The path to the SQLite database file.
+            auto_cleanup: A flag to enable or disable automatic cleanup.
+        """
         self.db_path = db_path or "memory_system.db"
         self.db_path = Path(self.db_path).resolve()
         self._initialized = False
@@ -65,7 +101,12 @@ class MemorySystem:
         self._db_pool: Optional[DatabasePool] = None
         
     async def initialize(self) -> None:
-        """Initialize the memory system database."""
+        """
+        Initializes the memory system and its database.
+
+        This method sets up the database connection pool and creates the
+        necessary tables and indexes if they don't already exist.
+        """
         if self._initialized:
             return
             
@@ -125,16 +166,17 @@ class MemorySystem:
                            stream_id: Optional[str] = None,
                            sequence: Optional[int] = None,
                            tags: Optional[List[str]] = None) -> str:
-        """Store AI analysis result in memory.
-        
+        """
+        Stores an AI analysis result in the memory system.
+
         Args:
-            analysis_result: The analysis result from AI service
-            stream_id: Optional stream identifier
-            sequence: Optional sequence number
-            tags: Optional tags for categorization
-            
+            analysis_result: The analysis result from the AI service.
+            stream_id: An optional identifier for the data stream.
+            sequence: An optional sequence number within a stream.
+            tags: Optional tags for categorization.
+
         Returns:
-            Memory entry ID
+            The ID of the newly created memory entry.
         """
         await self.initialize()
         
@@ -160,17 +202,18 @@ class MemorySystem:
                                 activities: List[str],
                                 stream_id: Optional[str] = None,
                                 sequence: Optional[int] = None) -> str:
-        """Store scene context information.
-        
+        """
+        Stores scene context information in the memory system.
+
         Args:
-            scene_description: Description of the scene
-            objects: List of detected objects
-            activities: List of detected activities
-            stream_id: Optional stream identifier
-            sequence: Optional sequence number
-            
+            scene_description: A description of the scene.
+            objects: A list of detected objects in the scene.
+            activities: A list of detected activities in the scene.
+            stream_id: An optional identifier for the data stream.
+            sequence: An optional sequence number within a stream.
+
         Returns:
-            Memory entry ID
+            The ID of the newly created memory entry.
         """
         await self.initialize()
         
@@ -199,17 +242,18 @@ class MemorySystem:
                          stream_id: Optional[str] = None,
                          limit: int = 10,
                          time_range: Optional[timedelta] = None) -> List[MemoryEntry]:
-        """Query memory for relevant entries.
-        
+        """
+        Queries the memory system for relevant entries.
+
         Args:
-            query: Search query
-            entry_type: Filter by entry type
-            stream_id: Filter by stream ID
-            limit: Maximum number of results
-            time_range: Time range to search within
-            
+            query: The search query to match against content and metadata.
+            entry_type: An optional filter for the entry type.
+            stream_id: An optional filter for the stream ID.
+            limit: The maximum number of results to return.
+            time_range: An optional time range to search within.
+
         Returns:
-            List of matching memory entries
+            A list of matching memory entries.
         """
         await self.initialize()
         
@@ -276,14 +320,15 @@ class MemorySystem:
     async def get_recent_context(self,
                                stream_id: Optional[str] = None,
                                limit: int = 5) -> List[MemoryEntry]:
-        """Get recent context entries.
-        
+        """
+        Retrieves recent context entries from the memory system.
+
         Args:
-            stream_id: Optional stream ID to filter by
-            limit: Maximum number of entries
-            
+            stream_id: An optional filter for the stream ID.
+            limit: The maximum number of entries to return.
+
         Returns:
-            List of recent memory entries
+            A list of recent memory entries.
         """
         return await self.query_memory(
             query="",
@@ -295,14 +340,15 @@ class MemorySystem:
     async def analyze_scene_changes(self,
                                   stream_id: str,
                                   time_window: timedelta = timedelta(minutes=5)) -> Dict[str, Any]:
-        """Analyze scene changes over time.
-        
+        """
+        Analyzes scene changes over a given time window.
+
         Args:
-            stream_id: Stream ID to analyze
-            time_window: Time window for analysis
-            
+            stream_id: The ID of the stream to analyze.
+            time_window: The time window for the analysis.
+
         Returns:
-            Analysis of scene changes
+            A dictionary with the analysis of scene changes.
         """
         entries = await self.query_memory(
             query="",
@@ -350,13 +396,14 @@ class MemorySystem:
         }
     
     async def _store_entry(self, entry: MemoryEntry) -> str:
-        """Store a memory entry in the database.
-        
+        """
+        Stores a memory entry in the database.
+
         Args:
-            entry: Memory entry to store
-            
+            entry: The MemoryEntry object to store.
+
         Returns:
-            Entry ID
+            The ID of the stored entry.
         """
         try:
             async with self._db_pool.get_connection() as db:
@@ -384,13 +431,14 @@ class MemorySystem:
             raise
     
     async def cleanup_old_entries(self, max_age: timedelta = timedelta(days=7)) -> int:
-        """Clean up old memory entries.
-        
+        """
+        Cleans up old entries from the memory system.
+
         Args:
-            max_age: Maximum age of entries to keep
-            
+            max_age: The maximum age of entries to keep.
+
         Returns:
-            Number of entries deleted
+            The number of entries that were deleted.
         """
         await self.initialize()
         
@@ -417,10 +465,11 @@ class MemorySystem:
             return 0
     
     async def get_statistics(self) -> Dict[str, Any]:
-        """Get memory system statistics.
-        
+        """
+        Retrieves statistics about the memory system.
+
         Returns:
-            Statistics about the memory system
+            A dictionary containing memory system statistics.
         """
         await self.initialize()
         
@@ -459,7 +508,7 @@ class MemorySystem:
             return {}
     
     async def _auto_cleanup_scheduler(self) -> None:
-        """Automatic cleanup scheduler that runs periodically."""
+        """Runs the automatic cleanup task periodically."""
         try:
             while True:
                 # Wait for 1 hour (3600 seconds)
@@ -483,7 +532,12 @@ class MemorySystem:
             await asyncio.sleep(300)  # Wait 5 minutes before retrying
     
     async def get_memory_usage(self) -> Dict[str, Any]:
-        """Get current memory usage statistics."""
+        """
+        Retrieves current memory usage statistics.
+
+        Returns:
+            A dictionary containing memory usage statistics.
+        """
         await self.initialize()
         
         try:
@@ -528,7 +582,7 @@ class MemorySystem:
             return {"error": str(e)}
     
     async def stop_cleanup_scheduler(self) -> None:
-        """Stop the automatic cleanup scheduler."""
+        """Stops the automatic cleanup scheduler."""
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
             try:
@@ -539,14 +593,15 @@ class MemorySystem:
             logger.info("Auto cleanup scheduler stopped")
     
     async def configure_auto_cleanup(self, enabled: bool, max_age_days: int = 7) -> Dict[str, Any]:
-        """Configure automatic memory cleanup settings.
-        
+        """
+        Configures the automatic memory cleanup settings.
+
         Args:
-            enabled: Enable or disable auto cleanup
-            max_age_days: Maximum age for entries in days (default: 7)
-            
+            enabled: A flag to enable or disable auto cleanup.
+            max_age_days: The maximum age for entries in days.
+
         Returns:
-            Configuration result with status and cleanup count
+            A dictionary with the configuration result.
         """
         try:
             # Stop current scheduler if running
@@ -590,12 +645,12 @@ class MemorySystem:
             }
     
     async def __aenter__(self):
-        """Async context manager entry."""
+        """Initializes the memory system when entering an async context."""
         await self.initialize()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
+        """Stops the cleanup scheduler when exiting an async context."""
         await self.stop_cleanup_scheduler()
 
 

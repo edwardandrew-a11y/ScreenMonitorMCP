@@ -1,4 +1,11 @@
-"""Performance monitoring and client protection for ScreenMonitorMCP v2."""
+"""
+Performance Monitoring and Client Protection for ScreenMonitorMCP v2.
+
+This module provides a comprehensive performance monitor that tracks system health,
+manages client connections, and protects the server from overload. It includes
+mechanisms for automatic cleanup of idle resources and dynamic adjustment of
+service levels to maintain stability.
+"""
 
 import asyncio
 import time
@@ -23,7 +30,19 @@ logger = structlog.get_logger()
 
 @dataclass
 class PerformanceMetrics:
-    """Performance metrics for monitoring system health."""
+    """
+    Represents performance metrics for monitoring system health.
+
+    Attributes:
+        cpu_usage (float): The current CPU usage percentage.
+        memory_usage (float): The current memory usage percentage.
+        active_connections (int): The number of active client connections.
+        active_streams (int): The number of active data streams.
+        avg_response_time (float): The average response time for client requests.
+        failed_connections (int): The number of failed connection attempts.
+        data_throughput (float): The data throughput in MB/s.
+        last_updated (datetime): The timestamp of the last metrics update.
+    """
     
     cpu_usage: float = 0.0
     memory_usage: float = 0.0
@@ -36,9 +55,17 @@ class PerformanceMetrics:
 
 
 class PerformanceMonitor:
-    """Monitor system performance and protect clients from overload."""
+    """
+    Monitors system performance and protects clients from overload.
+
+    This class runs background tasks to continuously monitor system health,
+    clean up idle resources, and apply protective measures to prevent server
+    overload. It provides a centralized point for collecting and analyzing
+    performance metrics.
+    """
     
     def __init__(self):
+        """Initializes the PerformanceMonitor."""
         self._metrics = PerformanceMetrics()
         self._monitoring_task: Optional[asyncio.Task] = None
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -47,7 +74,7 @@ class PerformanceMonitor:
         self._last_data_reset = time.time()
         
     async def start_monitoring(self):
-        """Start performance monitoring tasks."""
+        """Starts the performance monitoring and cleanup tasks."""
         if self._monitoring_task is None or self._monitoring_task.done():
             self._monitoring_task = asyncio.create_task(self._monitor_loop())
             logger.info("Performance monitoring started")
@@ -57,7 +84,7 @@ class PerformanceMonitor:
             logger.info("Cleanup monitoring started")
     
     async def stop_monitoring(self):
-        """Stop performance monitoring tasks."""
+        """Stops the performance monitoring and cleanup tasks."""
         if self._monitoring_task and not self._monitoring_task.done():
             self._monitoring_task.cancel()
             try:
@@ -75,7 +102,7 @@ class PerformanceMonitor:
         logger.info("Performance monitoring stopped")
     
     async def _monitor_loop(self):
-        """Main monitoring loop."""
+        """The main monitoring loop."""
         try:
             while True:
                 await self._update_metrics()
@@ -87,7 +114,7 @@ class PerformanceMonitor:
             logger.error("Performance monitoring error", error=str(e), exc_info=True)
     
     async def _cleanup_loop(self):
-        """Cleanup loop for idle connections and resources."""
+        """The main cleanup loop for idle resources."""
         try:
             while True:
                 await self._cleanup_idle_connections()
@@ -99,7 +126,7 @@ class PerformanceMonitor:
             logger.error("Cleanup loop error", error=str(e), exc_info=True)
     
     async def _update_metrics(self):
-        """Update performance metrics."""
+        """Updates the performance metrics."""
         try:
             # Update connection and stream counts
             connections = await connection_manager.get_active_connections()
@@ -128,7 +155,7 @@ class PerformanceMonitor:
             logger.error("Failed to update metrics", error=str(e))
     
     async def _check_system_health(self):
-        """Check system health and take protective actions."""
+        """Checks the system health and takes protective actions."""
         try:
             # Check if too many connections
             if self._metrics.active_connections > config.max_connections * 0.9:
@@ -160,7 +187,7 @@ class PerformanceMonitor:
             logger.error("Health check failed", error=str(e))
     
     async def _reduce_system_load(self):
-        """Reduce system load by cleaning up resources."""
+        """Reduces system load by cleaning up resources."""
         try:
             # Clean up idle connections more aggressively
             idle_threshold = timedelta(seconds=config.connection_timeout // 2)
@@ -173,7 +200,7 @@ class PerformanceMonitor:
             logger.error("Failed to reduce system load", error=str(e))
     
     async def _reduce_stream_load(self):
-        """Reduce stream load by stopping low-priority streams."""
+        """Reduces stream load by stopping low-priority streams."""
         try:
             streams = await stream_manager.get_active_streams()
             
@@ -188,7 +215,7 @@ class PerformanceMonitor:
             logger.error("Failed to reduce stream load", error=str(e))
     
     async def _optimize_performance(self):
-        """Optimize performance by adjusting stream settings."""
+        """Optimizes performance by adjusting stream settings."""
         try:
             streams = await stream_manager.get_active_streams()
             
@@ -210,7 +237,7 @@ class PerformanceMonitor:
             logger.error("Failed to optimize performance", error=str(e))
     
     async def _cleanup_idle_connections(self):
-        """Clean up idle connections."""
+        """Cleans up idle connections."""
         try:
             idle_threshold = timedelta(seconds=config.connection_timeout)
             cleaned = await connection_manager.cleanup_idle_connections(idle_threshold)
@@ -222,7 +249,7 @@ class PerformanceMonitor:
             logger.error("Failed to cleanup idle connections", error=str(e))
     
     async def _cleanup_failed_streams(self):
-        """Clean up failed or orphaned streams."""
+        """Cleans up failed or orphaned streams."""
         try:
             streams = await stream_manager.get_active_streams()
             
@@ -239,23 +266,48 @@ class PerformanceMonitor:
             logger.error("Failed to cleanup failed streams", error=str(e))
     
     def record_response_time(self, response_time: float):
-        """Record a response time for metrics."""
+        """
+        Records a response time for metrics calculation.
+
+        Args:
+            response_time: The response time to record.
+        """
         self._response_times.append(response_time)
     
     def record_data_sent(self, bytes_sent: int):
-        """Record data sent for throughput calculation."""
+        """
+        Records data sent for throughput calculation.
+
+        Args:
+            bytes_sent: The number of bytes sent.
+        """
         self._data_sent += bytes_sent / (1024 * 1024)  # Convert to MB
     
     def get_metrics(self) -> PerformanceMetrics:
-        """Get current performance metrics."""
+        """
+        Retrieves the current performance metrics.
+
+        Returns:
+            A PerformanceMetrics object with the current metrics.
+        """
         return self._metrics
     
     def is_running(self) -> bool:
-        """Check if performance monitoring is running."""
+        """
+        Checks if the performance monitor is running.
+
+        Returns:
+            True if the monitor is running, False otherwise.
+        """
         return self._monitoring_task is not None and not self._monitoring_task.done()
     
     async def get_health_status(self) -> Dict[str, Any]:
-        """Get system health status."""
+        """
+        Retrieves the current system health status.
+
+        Returns:
+            A dictionary with the system health status.
+        """
         metrics = self.get_metrics()
         
         # Determine health status

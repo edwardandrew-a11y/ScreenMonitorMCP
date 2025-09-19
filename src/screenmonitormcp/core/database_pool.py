@@ -1,4 +1,10 @@
-"""Database connection pool for ScreenMonitorMCP v2."""
+"""
+Database Connection Pool for ScreenMonitorMCP v2.
+
+This module provides a high-performance, asynchronous connection pool for SQLite,
+optimized for the needs of the ScreenMonitorMCP application. It includes features
+like automatic connection scaling, idle connection cleanup, and detailed statistics.
+"""
 
 import asyncio
 import aiosqlite
@@ -14,7 +20,19 @@ logger = structlog.get_logger()
 
 @dataclass
 class PoolStats:
-    """Database pool statistics."""
+    """
+    Represents statistics for the database connection pool.
+
+    Attributes:
+        total_connections (int): The total number of connections ever created.
+        active_connections (int): The number of currently active connections.
+        idle_connections (int): The number of idle connections in the pool.
+        total_queries (int): The total number of queries executed.
+        failed_queries (int): The number of queries that failed.
+        average_query_time (float): The average time for a query to execute.
+        pool_created_at (datetime): The timestamp when the pool was created.
+        last_cleanup (Optional[datetime]): The timestamp of the last cleanup.
+    """
     total_connections: int
     active_connections: int
     idle_connections: int
@@ -26,7 +44,21 @@ class PoolStats:
 
 
 class DatabasePool:
-    """SQLite connection pool with async support."""
+    """
+    An asynchronous SQLite connection pool.
+
+    This class manages a pool of aiosqlite connections to provide efficient
+    database access for concurrent operations. It supports connection scaling,
+    timeouts, and automatic cleanup of idle connections.
+
+    Attributes:
+        db_path (Path): The path to the SQLite database file.
+        max_connections (int): The maximum number of connections allowed in the pool.
+        min_connections (int): The minimum number of connections to maintain.
+        connection_timeout (float): The timeout for creating a new connection.
+        idle_timeout (float): The timeout for closing idle connections.
+        cleanup_interval (float): The interval for running the cleanup task.
+    """
     
     def __init__(
         self,
@@ -37,6 +69,17 @@ class DatabasePool:
         idle_timeout: float = 300.0,  # 5 minutes
         cleanup_interval: float = 60.0  # 1 minute
     ):
+        """
+        Initializes the DatabasePool.
+
+        Args:
+            db_path: The path to the SQLite database file.
+            max_connections: The maximum number of connections.
+            min_connections: The minimum number of connections.
+            connection_timeout: The timeout for creating a connection.
+            idle_timeout: The timeout for closing idle connections.
+            cleanup_interval: The interval for the cleanup task.
+        """
         self.db_path = db_path
         self.max_connections = max_connections
         self.min_connections = min_connections
@@ -64,7 +107,12 @@ class DatabasePool:
         self._query_times = []
     
     async def initialize(self) -> None:
-        """Initialize the connection pool."""
+        """
+        Initializes the connection pool.
+
+        This method creates the minimum number of connections and starts the
+        background cleanup task.
+        """
         if self._initialized:
             return
         
@@ -90,7 +138,12 @@ class DatabasePool:
             raise
     
     async def _create_connection(self) -> aiosqlite.Connection:
-        """Create a new database connection."""
+        """
+        Creates a new database connection.
+
+        Returns:
+            A new aiosqlite.Connection object.
+        """
         try:
             conn = await aiosqlite.connect(
                 self.db_path,
@@ -121,7 +174,15 @@ class DatabasePool:
     
     @asynccontextmanager
     async def get_connection(self):
-        """Get a connection from the pool."""
+        """
+        Provides a connection from the pool in an async context.
+
+        This method should be used with `async with` to ensure that connections
+        are properly acquired and released.
+
+        Yields:
+            An aiosqlite.Connection object.
+        """
         await self.initialize()
         
         conn = None
@@ -206,7 +267,7 @@ class DatabasePool:
             self._stats.average_query_time = sum(self._query_times) / len(self._query_times)
     
     async def _cleanup_loop(self):
-        """Cleanup idle connections periodically."""
+        """Periodically cleans up idle connections."""
         while True:
             try:
                 await asyncio.sleep(self.cleanup_interval)
@@ -218,7 +279,7 @@ class DatabasePool:
                 logger.error(f"Error in cleanup loop: {e}")
     
     async def _cleanup_idle_connections(self):
-        """Remove idle connections that exceed timeout."""
+        """Removes idle connections that have exceeded the timeout."""
         try:
             now = datetime.now()
             idle_threshold = now - timedelta(seconds=self.idle_timeout)
@@ -266,14 +327,24 @@ class DatabasePool:
             logger.error(f"Error in cleanup idle connections: {e}")
     
     async def get_stats(self) -> PoolStats:
-        """Get current pool statistics."""
+        """
+        Retrieves the current statistics of the connection pool.
+
+        Returns:
+            A PoolStats object with the current statistics.
+        """
         async with self._lock:
             self._stats.active_connections = len(self._active_connections)
             self._stats.idle_connections = self._pool.qsize()
             return self._stats
     
     async def health_check(self) -> Dict[str, Any]:
-        """Perform health check on the pool."""
+        """
+        Performs a health check on the connection pool.
+
+        Returns:
+            A dictionary with the health status of the pool.
+        """
         try:
             async with self.get_connection() as conn:
                 await conn.execute("SELECT 1")
@@ -297,7 +368,7 @@ class DatabasePool:
             }
     
     async def close(self):
-        """Close all connections and cleanup."""
+        """Closes all connections and cleans up the pool."""
         try:
             # Cancel cleanup task
             if self._cleanup_task:
@@ -339,7 +410,15 @@ _db_pool: Optional[DatabasePool] = None
 
 
 def get_db_pool(db_path: Path) -> DatabasePool:
-    """Get or create the global database pool."""
+    """
+    Gets or creates the global database pool instance.
+
+    Args:
+        db_path: The path to the SQLite database file.
+
+    Returns:
+        The global DatabasePool instance.
+    """
     global _db_pool
     
     if _db_pool is None:
@@ -349,7 +428,7 @@ def get_db_pool(db_path: Path) -> DatabasePool:
 
 
 async def close_db_pool():
-    """Close the global database pool."""
+    """Closes the global database pool."""
     global _db_pool
     
     if _db_pool:
