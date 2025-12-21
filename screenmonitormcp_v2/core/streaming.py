@@ -6,6 +6,7 @@ import uuid
 from typing import AsyncGenerator, Dict, Any, Optional, Callable
 from datetime import datetime
 import structlog
+import logging
 from .screen_capture import ScreenCapture
 
 try:
@@ -44,6 +45,8 @@ except ImportError:
     from server.config import config
 from .connection import connection_manager
 
+# Configure logging for debugging stream issues
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = structlog.get_logger()
 
 
@@ -66,6 +69,11 @@ class StreamManager:
         }
         self._frame_buffers: Dict[str, list] = {}  # Frame buffers per stream
         self._cleanup_task: Optional[asyncio.Task] = None
+        self.screen_capture = ScreenCapture()  # Initialize screen capture instance
+        self._screen_streamer = None  # Will be initialized lazily
+        self._pending_analyses: Dict[str, set] = {}  # Track pending analysis tasks per stream
+        self._analysis_metadata: Dict[str, Dict[str, Any]] = {}  # Track analysis timing per stream
+        self._stream_debug: Dict[str, list] = {}  # Debug log for each stream
         self._start_resource_monitor()
         
     async def create_stream(
@@ -121,7 +129,15 @@ class StreamManager:
             
             self._active_streams[stream_id] = stream_config
             self._frame_counter[stream_id] = 0
-            
+            self._pending_analyses[stream_id] = set()  # Initialize pending analysis tracking
+            self._analysis_metadata[stream_id] = {
+                "last_analyzed_sequence": 0,
+                "last_analysis_time": None,
+                "total_analyses_completed": 0,
+                "total_analyses_failed": 0
+            }
+            self._stream_debug[stream_id] = []  # Initialize debug log
+
             logger.info(
                 "Stream created with safety controls and memory integration",
                 stream_id=stream_id,
@@ -131,7 +147,7 @@ class StreamManager:
                 max_concurrent=config.max_concurrent_streams,
                 memory_enabled=self._memory_enabled
             )
-            
+
             return stream_id
     
     async def start_stream(
@@ -142,20 +158,100 @@ class StreamManager:
         """Start a stream with a data generator."""
         async with self._lock:
             if stream_id not in self._active_streams:
+                logger.error(f"Cannot start stream {stream_id}: stream not found in active_streams")
                 return False
-            
+
             if stream_id in self._stream_tasks:
                 logger.warning("Stream already running", stream_id=stream_id)
                 return False
-            
+
+            # Set status to active so the stream loop will run
+            self._active_streams[stream_id]["status"] = "active"
+            logger.info(f"Set stream {stream_id} status to 'active'")
+
             task = asyncio.create_task(
                 self._run_stream(stream_id, data_generator)
             )
             self._stream_tasks[stream_id] = task
-            
+
+            # Add callback to log if task fails
+            def log_task_exception(t):
+                try:
+                    exception = t.exception()
+                    if exception:
+                        logger.error(f"Stream task failed for {stream_id}: {exception}", exc_info=exception)
+                except asyncio.CancelledError:
+                    pass
+            task.add_done_callback(log_task_exception)
+
             logger.info("Stream started", stream_id=stream_id)
             return True
-    
+
+    def _debug_log(self, stream_id: str, message: str):
+        """Add a debug message to the stream's debug log."""
+        if stream_id in self._stream_debug:
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self._stream_debug[stream_id].append(f"{timestamp}: {message}")
+            # Keep only last 50 messages
+            if len(self._stream_debug[stream_id]) > 50:
+                self._stream_debug[stream_id] = self._stream_debug[stream_id][-50:]
+
+    async def start_stream_direct(
+        self,
+        stream_id: str,
+        quality: int = 80,
+        monitor: int = 0
+    ) -> bool:
+        """Start a stream directly with built-in screen capture generator.
+
+        This is a simpler alternative to start_stream that doesn't require
+        passing a custom generator function.
+        """
+        self._debug_log(stream_id, f"start_stream_direct called with quality={quality}, monitor={monitor}")
+
+        # Initialize ScreenStreamer if needed
+        if self._screen_streamer is None:
+            self._screen_streamer = ScreenStreamer()
+            self._debug_log(stream_id, "start_stream_direct: initialized ScreenStreamer")
+
+        async def direct_generator(sid: str):
+            """Direct screen capture generator."""
+            self._debug_log(sid, "direct_generator: function called")
+            logger.info(f"direct_generator starting for stream {sid}, monitor={monitor}, quality={quality}")
+            frame_count = 0
+            try:
+                self._debug_log(sid, "direct_generator: entering while loop")
+                while True:
+                    # Capture screen using ScreenStreamer
+                    self._debug_log(sid, f"direct_generator: about to capture frame {frame_count + 1}")
+                    screen_data = await self._screen_streamer.capture_screen(
+                        monitor=monitor,
+                        region=None,
+                        quality=quality,
+                        resolution=None
+                    )
+                    self._debug_log(sid, f"direct_generator: captured frame {frame_count + 1}, success={screen_data.get('success')}")
+
+                    frame_count += 1
+                    if frame_count % 10 == 0:
+                        logger.info(f"direct_generator: captured {frame_count} frames for {sid}")
+
+                    yield screen_data
+
+            except asyncio.CancelledError:
+                self._debug_log(sid, f"direct_generator: cancelled after {frame_count} frames")
+                logger.info(f"direct_generator cancelled after {frame_count} frames for {sid}")
+                raise
+            except Exception as e:
+                self._debug_log(sid, f"direct_generator: exception after {frame_count} frames: {type(e).__name__}: {str(e)}")
+                logger.error(f"direct_generator error after {frame_count} frames for {sid}: {e}", exc_info=True)
+                raise
+
+        self._debug_log(stream_id, "start_stream_direct: about to call start_stream")
+        result = await self.start_stream(stream_id, direct_generator)
+        self._debug_log(stream_id, f"start_stream_direct: start_stream returned {result}")
+        return result
+
     async def stop_stream(self, stream_id: str) -> bool:
         """Stop a stream."""
         async with self._lock:
@@ -203,14 +299,21 @@ class StreamManager:
         data_generator: Callable[[str], AsyncGenerator[Dict[str, Any], None]]
     ):
         """Run the stream loop with adaptive quality and backpressure control."""
+        self._debug_log(stream_id, "_run_stream: task started")
+        logger.info(f"_run_stream starting for {stream_id}")
         try:
             stream_config = self._active_streams[stream_id]
             fps = stream_config["fps"]
             interval = 1.0 / fps
             failed_sends = 0
             adaptive_quality = stream_config["quality"]
-            
+
+            self._debug_log(stream_id, f"_run_stream: calling data_generator, status={stream_config['status']}")
+            logger.info(f"_run_stream: calling data_generator for {stream_id}")
+            frame_num = 0
             async for data in data_generator(stream_id):
+                frame_num += 1
+                self._debug_log(stream_id, f"_run_stream: received frame {frame_num} from generator")
                 if stream_config["status"] != "active":
                     break
                 
@@ -238,22 +341,27 @@ class StreamManager:
                     stream_id, data, stream_config
                 )
                 
-                # Broadcast to all WebSocket connections
-                broadcast_data = {
-                    "type": "stream_data",
-                    "stream_id": stream_id,
-                    "sequence": event.sequence,
-                    "timestamp": event.timestamp.isoformat(),
-                    "data": data,
-                    "adaptive_quality": adaptive_quality
-                }
-                
-                # Measure broadcast time for backpressure detection
-                start_time = asyncio.get_event_loop().time()
-                sent_count = await connection_manager.broadcast_to_stream(
-                    stream_id, broadcast_data
-                )
-                broadcast_time = asyncio.get_event_loop().time() - start_time
+                # Broadcast to all WebSocket connections (skip if no connections to save resources)
+                sent_count = 0
+                broadcast_time = 0.0
+
+                # Only broadcast if there are active WebSocket connections
+                if connection_manager and hasattr(connection_manager, '_active_streams'):
+                    broadcast_data = {
+                        "type": "stream_data",
+                        "stream_id": stream_id,
+                        "sequence": event.sequence,
+                        "timestamp": event.timestamp.isoformat(),
+                        "data": data,
+                        "adaptive_quality": adaptive_quality
+                    }
+
+                    # Measure broadcast time for backpressure detection
+                    start_time = asyncio.get_event_loop().time()
+                    sent_count = await connection_manager.broadcast_to_stream(
+                        stream_id, broadcast_data
+                    )
+                    broadcast_time = asyncio.get_event_loop().time() - start_time
                 
                 # Adaptive quality control based on performance
                 if broadcast_time > 0.5:  # If broadcast takes more than 500ms
@@ -335,16 +443,22 @@ class StreamManager:
                 
                 # Prepare analysis prompt
                 analysis_prompt = f"Analyze this screen capture from stream {stream_id} at sequence {stream_config['sequence']}. Describe what you see, any changes from previous frames, and notable activities."
-                
+
                 # Perform AI analysis asynchronously (don't block streaming)
-                asyncio.create_task(self._analyze_and_store(
+                task = asyncio.create_task(self._analyze_and_store(
                     stream_id=stream_id,
                     image_data=image_data,
                     prompt=analysis_prompt,
                     sequence=stream_config["sequence"],
                     frame_number=current_frame
                 ))
-                
+
+                # Track pending analysis
+                if stream_id in self._pending_analyses:
+                    self._pending_analyses[stream_id].add(task)
+                    # Auto-cleanup when task completes
+                    task.add_done_callback(lambda t: self._pending_analyses.get(stream_id, set()).discard(t))
+
                 # Update memory config
                 memory_config["last_analysis_sequence"] = stream_config["sequence"]
                 memory_config["total_analyses"] += 1
@@ -375,6 +489,15 @@ class StreamManager:
     ):
         """Analyze frame with AI and store in memory system."""
         try:
+            # Check if AI service is configured before attempting analysis
+            if not ai_service or not ai_service.is_configured():
+                logger.debug(
+                    "Skipping frame analysis - AI service not configured",
+                    stream_id=stream_id,
+                    sequence=sequence
+                )
+                return
+
             # Perform AI analysis
             analysis_result = await ai_service.analyze_image(
                 image_base64=image_data,
@@ -385,7 +508,13 @@ class StreamManager:
                 sequence=sequence,
                 tags=["streaming", "auto_analysis", f"frame_{frame_number}"]
             )
-            
+
+            # Update analysis metadata on success
+            if stream_id in self._analysis_metadata:
+                self._analysis_metadata[stream_id]["last_analyzed_sequence"] = sequence
+                self._analysis_metadata[stream_id]["last_analysis_time"] = datetime.now()
+                self._analysis_metadata[stream_id]["total_analyses_completed"] += 1
+
             logger.info(
                 "Frame analyzed and stored in memory",
                 stream_id=stream_id,
@@ -393,8 +522,12 @@ class StreamManager:
                 frame_number=frame_number,
                 analysis_length=len(analysis_result.get("analysis", ""))
             )
-            
+
         except Exception as e:
+            # Update analysis metadata on failure
+            if stream_id in self._analysis_metadata:
+                self._analysis_metadata[stream_id]["total_analyses_failed"] += 1
+
             logger.error(
                 "Error analyzing frame for memory",
                 stream_id=stream_id,
@@ -407,6 +540,78 @@ class StreamManager:
     async def get_stream_info(self, stream_id: str) -> Optional[Dict[str, Any]]:
         """Get stream information."""
         return self._active_streams.get(stream_id)
+
+    def get_stream_diagnostics(self, stream_id: str) -> Dict[str, Any]:
+        """Get detailed diagnostics for a stream including why it might have stopped."""
+        if stream_id not in self._active_streams:
+            return {"error": "Stream not found"}
+
+        stream_config = self._active_streams[stream_id]
+
+        # Check if task exists and its state
+        task_info = "no task"
+        if stream_id in self._stream_tasks:
+            task = self._stream_tasks[stream_id]
+            if task.done():
+                try:
+                    exception = task.exception()
+                    if exception:
+                        task_info = f"task failed with exception: {type(exception).__name__}: {str(exception)}"
+                    else:
+                        task_info = "task completed normally (shouldn't happen - has while True loop)"
+                except asyncio.CancelledError:
+                    task_info = "task was cancelled"
+            else:
+                task_info = "task is running"
+
+        # Get debug log
+        debug_log = self._stream_debug.get(stream_id, [])
+
+        return {
+            "stream_id": stream_id,
+            "status": stream_config.get("status", "unknown"),
+            "sequence": stream_config.get("sequence", 0),
+            "task_state": task_info,
+            "fps": stream_config.get("fps"),
+            "created_at": stream_config.get("created_at"),
+            "memory_enabled": stream_config.get("memory_config", {}).get("enabled"),
+            "frame_counter": self._frame_counter.get(stream_id, 0),
+            "debug_log": debug_log
+        }
+
+    def get_analysis_metadata(self, stream_id: str) -> Dict[str, Any]:
+        """Get analysis status metadata for a stream.
+
+        Returns information about analysis lag, pending analyses, and data freshness.
+        """
+        if stream_id not in self._active_streams:
+            return {"error": "Stream not found"}
+
+        stream_config = self._active_streams[stream_id]
+        metadata = self._analysis_metadata.get(stream_id, {})
+        pending_count = len(self._pending_analyses.get(stream_id, set()))
+
+        current_sequence = stream_config.get("sequence", 0)
+        last_analyzed = metadata.get("last_analyzed_sequence", 0)
+        last_analysis_time = metadata.get("last_analysis_time")
+
+        # Calculate analysis lag
+        sequence_lag = current_sequence - last_analyzed
+        fps = stream_config.get("fps", 10)
+        time_lag_seconds = sequence_lag / fps if fps > 0 else 0
+
+        return {
+            "stream_id": stream_id,
+            "current_sequence": current_sequence,
+            "last_analyzed_sequence": last_analyzed,
+            "pending_analyses": pending_count,
+            "sequence_lag": sequence_lag,
+            "time_lag_seconds": round(time_lag_seconds, 2),
+            "last_analysis_time": last_analysis_time.isoformat() if last_analysis_time else None,
+            "analyses_completed": metadata.get("total_analyses_completed", 0),
+            "analyses_failed": metadata.get("total_analyses_failed", 0),
+            "data_freshness": "fresh" if time_lag_seconds < 1.0 else "stale" if time_lag_seconds < 3.0 else "very_stale"
+        }
     
     async def get_active_streams(self) -> Dict[str, Dict[str, Any]]:
         """Get all active streams."""
@@ -700,14 +905,19 @@ class ScreenStreamer:
     async def stream_screen(
         self,
         stream_id: str,
-        fps: int = 2,
         quality: int = 80,
         monitor: int = 1,
         region: Optional[Dict[str, int]] = None,
         resolution: Optional[tuple] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Generate screen stream data."""
+        """Generate screen stream data.
+
+        Note: FPS is controlled by _run_stream(), not here. This just generates
+        frames as fast as requested.
+        """
+        logger.info(f"stream_screen generator starting for {stream_id}, monitor={monitor}, quality={quality}")
         try:
+            frame_count = 0
             while True:
                 # Capture screen
                 screen_data = await self.capture_screen(
@@ -716,17 +926,20 @@ class ScreenStreamer:
                     quality=quality,
                     resolution=resolution
                 )
-                
+
+                frame_count += 1
+                if frame_count % 10 == 0:
+                    logger.info(f"stream_screen: captured {frame_count} frames for {stream_id}")
+
                 yield screen_data
-                
-                # Control FPS
-                await asyncio.sleep(1.0 / fps)
-                
+
+                # FPS control is handled by _run_stream(), not here
+
         except asyncio.CancelledError:
-            logger.info("Screen stream cancelled", stream_id=stream_id)
+            logger.info(f"Screen stream cancelled after {frame_count} frames", stream_id=stream_id)
             raise
         except Exception as e:
-            logger.error("Screen stream error", error=str(e), exc_info=True)
+            logger.error(f"Screen stream error after {frame_count} frames: {str(e)}", error=str(e), exc_info=True)
             raise
 
 

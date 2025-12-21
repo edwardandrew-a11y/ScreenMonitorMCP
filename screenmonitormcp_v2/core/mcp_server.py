@@ -46,7 +46,7 @@ if not logger.handlers:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
     logger.addHandler(handler)
-    logger.setLevel(logging.ERROR)  # Only show errors in MCP mode
+    logger.setLevel(logging.INFO)  # Show INFO and above for debugging stream issues
 
 # Initialize FastMCP server
 mcp = FastMCP("screenmonitormcp-v2")
@@ -212,21 +212,36 @@ async def create_stream(
     format: str = "jpeg"
 ) -> str:
     """Create a new screen streaming session
-    
+
     Args:
         monitor: Monitor number to stream (0 for primary)
         fps: Frames per second for streaming
         quality: Image quality (1-100)
         format: Image format (jpeg or png)
-    
+
     Returns:
         Stream ID or error message
     """
     try:
+        # Create the stream configuration
         stream_id = await stream_manager.create_stream("screen", fps, quality, format)
-        return f"Stream created with ID: {stream_id}"
+
+        # Start the stream directly with stream_screen method
+        # Pass quality and monitor, stream_id will be passed by start_stream
+        started = await stream_manager.start_stream_direct(
+            stream_id=stream_id,
+            quality=quality,
+            monitor=monitor
+        )
+
+        if started:
+            return f"Stream created with ID: {stream_id}\n\n" \
+                   f"IMPORTANT: Save this stream_id! You MUST use it when calling analyze_scene_from_memory() " \
+                   f"or query_memory() to query data from this stream. Without the stream_id, queries will fail."
+        else:
+            return f"Stream created with ID: {stream_id}, but failed to start capture"
     except Exception as e:
-        logger.error(f"Failed to create stream: {e}")
+        logger.error(f"Failed to create stream: {e}", exc_info=True)
         return f"Error: {str(e)}"
 
 @mcp.tool()
@@ -261,6 +276,23 @@ async def get_stream_info(stream_id: str) -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
+def get_stream_diagnostics(stream_id: str) -> str:
+    """Get detailed diagnostics for a stream to debug why it might have stopped
+
+    Args:
+        stream_id: Stream ID to diagnose
+
+    Returns:
+        Diagnostic information including task state and any exceptions
+    """
+    try:
+        diagnostics = stream_manager.get_stream_diagnostics(stream_id)
+        return f"Stream diagnostics: {diagnostics}"
+    except Exception as e:
+        logger.error(f"Failed to get stream diagnostics: {e}")
+        return f"Error: {str(e)}"
+
+@mcp.tool()
 async def stop_stream(stream_id: str) -> str:
     """Stop a specific streaming session
     
@@ -287,24 +319,59 @@ async def analyze_scene_from_memory(
     limit: int = 10
 ) -> str:
     """Analyze scene based on stored memory data
-    
+
     Args:
         query: What to analyze or look for in the stored scenes
-        stream_id: Specific stream to analyze (optional)
+        stream_id: Stream ID to query (REQUIRED when analyzing active streams - get this from create_stream or list_streams)
         time_range_minutes: Time range to search in minutes (default: 30)
         limit: Maximum number of results to analyze (default: 10)
-    
+
     Returns:
-        Scene analysis based on memory data
+        Scene analysis based on memory data with metadata about data freshness
+
+    CRITICAL: You MUST provide stream_id when querying memory for an active screen stream.
+    Without stream_id, the query searches all memory (not just the current stream) and will
+    likely return "No relevant memory data found".
+
+    IMPORTANT: If the response includes an analysis lag warning, you MUST inform the user
+    that video analysis is still catching up and recent events (within the lag time window)
+    may not be visible in the results yet. Use natural language like "I'm still processing
+    the last X seconds of video" or "Analysis is X seconds behind, so I can't see what just happened yet."
     """
     try:
+        # Get analysis metadata if stream_id provided
+        lag_warning = ""
+        metadata_info = ""
+
+        if stream_id:
+            analysis_metadata = stream_manager.get_analysis_metadata(stream_id)
+            if "error" not in analysis_metadata:
+                lag_seconds = analysis_metadata['time_lag_seconds']
+                pending = analysis_metadata['pending_analyses']
+
+                # Create prominent warning if there's significant lag
+                if lag_seconds > 1.0 or pending > 0:
+                    lag_warning = f"⚠️ ANALYSIS LAG WARNING: Video analysis is {lag_seconds} seconds behind the live stream. " \
+                                 f"Currently processing {pending} frame(s). Events that happened in the last {lag_seconds} seconds " \
+                                 f"may NOT appear in results below yet.\n\n"
+
+                # Add detailed metadata at the end
+                metadata_info = f"\n\n[Stream Status: {analysis_metadata['data_freshness']} | " \
+                               f"Lag: {lag_seconds}s | " \
+                               f"Pending: {pending} frames | " \
+                               f"Analyzed: {analysis_metadata['last_analyzed_sequence']}/{analysis_metadata['current_sequence']} frames | " \
+                               f"Success: {analysis_metadata['analyses_completed']} | " \
+                               f"Failed: {analysis_metadata['analyses_failed']}]"
+
+        # Convert minutes to hours for AI service (which expects time_range_hours)
+        time_range_hours = max(1, time_range_minutes // 60)  # At least 1 hour
+        # Note: AI service doesn't support 'limit' parameter, it's kept in tool interface for future use
         result = await ai_service.analyze_scene_from_memory(
             query=query,
             stream_id=stream_id,
-            time_range_minutes=time_range_minutes,
-            limit=limit
+            time_range_hours=time_range_hours
         )
-        return f"Scene analysis: {result}"
+        return f"{lag_warning}Scene analysis: {result}{metadata_info}"
     except Exception as e:
         logger.error(f"Failed to analyze scene from memory: {e}")
         return f"Error: {str(e)}"
@@ -317,24 +384,58 @@ async def query_memory(
     limit: int = 20
 ) -> str:
     """Query the memory system for stored analysis data
-    
+
     Args:
         query: Search query for memory entries
-        stream_id: Filter by specific stream ID (optional)
+        stream_id: Stream ID to filter by (REQUIRED when querying active streams - get this from create_stream or list_streams)
         time_range_minutes: Time range to search in minutes (default: 60)
         limit: Maximum number of results (default: 20)
-    
+
     Returns:
-        Memory query results
+        Memory query results with metadata about data freshness
+
+    CRITICAL: You MUST provide stream_id when querying memory for an active screen stream.
+    Without stream_id, the query searches all memory (not just the current stream) and will
+    likely return no results or results from other streams.
+
+    IMPORTANT: If the response includes an analysis lag warning, you MUST inform the user
+    that video analysis is still catching up and recent events (within the lag time window)
+    may not be visible in the results yet. Use natural language like "I'm still processing
+    the last X seconds of video" or "Analysis is X seconds behind, so I can't see what just happened yet."
     """
     try:
+        # Get analysis metadata if stream_id provided
+        lag_warning = ""
+        metadata_info = ""
+
+        if stream_id:
+            analysis_metadata = stream_manager.get_analysis_metadata(stream_id)
+            if "error" not in analysis_metadata:
+                lag_seconds = analysis_metadata['time_lag_seconds']
+                pending = analysis_metadata['pending_analyses']
+
+                # Create prominent warning if there's significant lag
+                if lag_seconds > 1.0 or pending > 0:
+                    lag_warning = f"⚠️ ANALYSIS LAG WARNING: Video analysis is {lag_seconds} seconds behind the live stream. " \
+                                 f"Currently processing {pending} frame(s). Events that happened in the last {lag_seconds} seconds " \
+                                 f"may NOT appear in results below yet.\n\n"
+
+                # Add detailed metadata at the end
+                metadata_info = f"\n\n[Stream Status: {analysis_metadata['data_freshness']} | " \
+                               f"Lag: {lag_seconds}s | " \
+                               f"Pending: {pending} frames | " \
+                               f"Analyzed: {analysis_metadata['last_analyzed_sequence']}/{analysis_metadata['current_sequence']} frames | " \
+                               f"Success: {analysis_metadata['analyses_completed']} | " \
+                               f"Failed: {analysis_metadata['analyses_failed']}]"
+
+        # Note: query_memory_direct doesn't support time_range filtering
+        # The time_range_minutes parameter is kept in the tool interface for future use
         result = await ai_service.query_memory_direct(
             query=query,
             stream_id=stream_id,
-            time_range_minutes=time_range_minutes,
             limit=limit
         )
-        return f"Memory query results: {result}"
+        return f"{lag_warning}Memory query results: {result}{metadata_info}"
     except Exception as e:
         logger.error(f"Failed to query memory: {e}")
         return f"Error: {str(e)}"
