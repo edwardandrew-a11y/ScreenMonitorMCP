@@ -17,7 +17,7 @@ import asyncio
 import logging
 import base64
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, Literal, List, Dict, TypedDict
 from datetime import datetime
 
 # Official MCP Python SDK FastMCP imports
@@ -48,6 +48,17 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)  # Show INFO and above for debugging stream issues
 
+# Define message structure for chat_completion
+class ChatMessage(TypedDict):
+    """OpenAI-compatible chat message structure
+
+    Required fields:
+        role: Message role (system, user, assistant, or tool)
+        content: Message content text
+    """
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str
+
 # Initialize FastMCP server
 mcp = FastMCP("screenmonitormcp-v2")
 
@@ -60,7 +71,7 @@ screen_capture = ScreenCapture()
 async def analyze_screen(
     query: str,
     monitor: int = 0,
-    detail_level: str = "high"
+    detail_level: Literal["low", "high"] = "high"
 ) -> str:
     """Analyze the current screen content using AI vision
     
@@ -95,19 +106,19 @@ async def analyze_screen(
 
 @mcp.tool()
 async def chat_completion(
-    messages: list,
+    messages: List[ChatMessage],
     model: Optional[str] = None,
     max_tokens: int = 1000,
     temperature: float = 0.7
 ) -> str:
     """Generate chat completion using AI models
-    
+
     Args:
-        messages: Array of chat messages with role and content
+        messages: Array of chat messages with role and content. Each message must have 'role' (system/user/assistant/tool) and 'content' (string). Optional: 'name' and 'tool_call_id' for tool messages.
         model: AI model to use
         max_tokens: Maximum tokens for response
         temperature: Temperature for response generation
-    
+
     Returns:
         AI response as text
     """
@@ -209,7 +220,7 @@ async def create_stream(
     monitor: int = 0,
     fps: int = 10,
     quality: int = 80,
-    format: str = "jpeg"
+    format: Literal["jpeg", "png"] = "jpeg"
 ) -> str:
     """Create a new screen streaming session
 
